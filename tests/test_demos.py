@@ -267,6 +267,22 @@ class TestFreelanceMonitor(unittest.TestCase):
         self.assertEqual(cfg["keywords"], ["python", "парс"])
         self.assertEqual(cfg["excludes"], ["1с"])
 
+    def test_load_config_normalizes_filters(self):
+        # контракт: конфіг приходить зі load_config уже нормалізованим
+        import json
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "cfg.json")
+            with open(path, "w", encoding="utf-8") as fh:
+                json.dump({"keywords": [" Python ", "ПАРС", ""], "excludes": [" 1С "]}, fh)
+            cfg = freelance_monitor.load_config(path)
+
+        self.assertEqual(cfg["keywords"], ["python", "парс"])
+        self.assertEqual(cfg["excludes"], ["1с"])
+        order = freelance_monitor.parse_orders(ORDER_LIST_HTML)[0]
+        self.assertTrue(freelance_monitor.matches(order, cfg))
+
     def test_seen_store_dedup(self):
         store = freelance_monitor.SeenStore(":memory:")
         self.addCleanup(store.close)

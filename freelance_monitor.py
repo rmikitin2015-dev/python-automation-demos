@@ -87,11 +87,12 @@ def setup_stdout() -> None:
 
 
 def load_config(path: str | None) -> dict:
+    """Читає JSON-конфіг (або типові значення) і одразу нормалізує списки слів."""
     cfg = dict(DEFAULT_CONFIG)
     if path:
         with open(path, "r", encoding="utf-8") as fh:
             cfg.update(json.load(fh))
-    return cfg
+    return normalize_filters(cfg)
 
 
 def normalize_filters(cfg: dict) -> dict:
@@ -100,6 +101,13 @@ def normalize_filters(cfg: dict) -> dict:
     for key in ("keywords", "excludes"):
         cfg[key] = [str(w).strip().lower() for w in (cfg.get(key) or []) if str(w).strip()]
     return cfg
+
+
+def ensure_parent(path: str) -> None:
+    """Створює батьківську теку для файлу, якщо її ще немає."""
+    folder = os.path.dirname(os.path.abspath(path))
+    if folder:
+        os.makedirs(folder, exist_ok=True)
 
 
 def clean_text(raw: str) -> str:
@@ -223,7 +231,11 @@ def collect(cfg: dict) -> list[dict]:
 
 
 def matches(order: dict, cfg: dict) -> bool:
-    """Локальний фільтр: бюджет, свіжість, слова. Списки слів уже нормалізовані."""
+    """Локальний фільтр: бюджет, свіжість, слова.
+
+    cfg має бути з load_config() або normalize_filters(): там списки слів уже
+    приведені до нижнього регістру й обрізані, тому тут їх не перераховуємо.
+    """
     budget = order.get("budget")
     min_budget = cfg.get("min_budget")
     max_budget = cfg.get("max_budget")
@@ -259,7 +271,7 @@ class SeenStore:
 
     def __init__(self, path: str):
         if path != ":memory:":
-            os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+            ensure_parent(path)
         self.conn = sqlite3.connect(path)
         self.conn.execute(
             "CREATE TABLE IF NOT EXISTS seen ("
@@ -302,8 +314,8 @@ def format_row(order: dict) -> dict:
         "tags": ", ".join(order.get("tags") or []),
         "published": order.get("age_label") or "",
         "proposals": str(order.get("proposals") or 0),
-        "description": (order.get("description") or "")[:200],
         "hot": "гаряче" if order.get("hot") else "",
+        "description": (order.get("description") or "")[:200],
         "url": order.get("url") or "",
     }
 
@@ -321,16 +333,15 @@ def print_rows(rows: list[dict]) -> None:
 
 
 def write_csv(rows: list[dict], path: str) -> None:
-    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
-    fields = ["id", "title", "budget", "tags", "published", "proposals", "hot", "description", "url"]
+    ensure_parent(path)
     with open(path, "w", encoding="utf-8-sig", newline="") as fh:
-        writer = csv.DictWriter(fh, fieldnames=fields, delimiter=";")
+        writer = csv.DictWriter(fh, fieldnames=list(rows[0]), delimiter=";")
         writer.writeheader()
         writer.writerows(rows)
 
 
 def write_html(rows: list[dict], path: str, cfg: dict) -> None:
-    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    ensure_parent(path)
     filters = []
     if cfg.get("keywords"):
         filters.append("ключові слова: " + ", ".join(str(k) for k in cfg["keywords"]))
@@ -477,6 +488,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.pages is not None:
         cfg["pages"] = args.pages
 
+    # CLI-прапорці перекривають конфіг, тому після них слова треба нормалізувати ще раз.
     cfg = normalize_filters(cfg)
 
     if args.loop > 0:
