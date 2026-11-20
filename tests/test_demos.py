@@ -216,6 +216,7 @@ class TestFreelanceMonitor(unittest.TestCase):
             "30 хвилин тому": 0.5,
             "3 години тому": 3.0,
             "вчора": 24.0,
+            "позавчора": 48.0,
             "3 днів тому": 72.0,
             "2 тижні тому": 336.0,
             "": None,
@@ -225,10 +226,10 @@ class TestFreelanceMonitor(unittest.TestCase):
                 self.assertEqual(freelance_monitor.parse_age_hours(raw), expected)
 
     def test_build_url(self):
-        self.assertEqual(freelance_monitor.build_url(None, 1), "https://freelance.ua/orders/")
-        self.assertEqual(freelance_monitor.build_url("python", 1), "https://freelance.ua/orders/?q=python")
-        self.assertIn("q=telegram+%D0%B1%D0%BE%D1%82", freelance_monitor.build_url("telegram бот", 2))
-        self.assertIn("page=2", freelance_monitor.build_url("python", 2))
+        self.assertEqual(freelance_monitor.build_url(1), "https://freelance.ua/orders/")
+        self.assertEqual(freelance_monitor.build_url(2), "https://freelance.ua/orders/?page=2")
+        self.assertNotIn("page", freelance_monitor.build_url(1))
+        self.assertNotIn("q=", freelance_monitor.build_url(5))  # пошуку на сайті більше немає
 
     def test_filters(self):
         cfg = dict(freelance_monitor.DEFAULT_CONFIG)
@@ -247,6 +248,25 @@ class TestFreelanceMonitor(unittest.TestCase):
         cfg_exclude = dict(cfg, excludes=["sheets"])
         self.assertFalse(freelance_monitor.matches(orders[0], cfg_exclude))
 
+    def test_unknown_budget_passes_budget_filter(self):
+        # «Договірна»: ціна невідома, тому min_budget/max_budget її не відсікають
+        cfg = freelance_monitor.normalize_filters(
+            dict(freelance_monitor.DEFAULT_CONFIG, keywords=["python"], min_budget=5000, max_budget=6000)
+        )
+        order = dict(freelance_monitor.parse_orders(ORDER_LIST_HTML)[0], budget=None, budget_raw="Договірна")
+        self.assertTrue(freelance_monitor.matches(order, cfg))
+
+        # а от відома ціна нижче мінімуму — відсікається
+        cheap = dict(order, budget=900.0, budget_raw="900 грн.")
+        self.assertFalse(freelance_monitor.matches(cheap, cfg))
+
+    def test_normalize_filters(self):
+        cfg = freelance_monitor.normalize_filters(
+            {"keywords": [" Python ", "ПАРС", ""], "excludes": [" 1С "]}
+        )
+        self.assertEqual(cfg["keywords"], ["python", "парс"])
+        self.assertEqual(cfg["excludes"], ["1с"])
+
     def test_seen_store_dedup(self):
         store = freelance_monitor.SeenStore(":memory:")
         self.addCleanup(store.close)
@@ -261,6 +281,7 @@ class TestFreelanceMonitor(unittest.TestCase):
         text = freelance_monitor.telegram_text(row)
         self.assertIn("298308-parser-czin-na-avito", text)
         self.assertIn("900", text)
+        self.assertIn("гаряче", text)  # перша картка фікстури має мітку «гаряче»
         self.assertIn("freelance.ua/orders/", text)
 
 
