@@ -1,0 +1,15 @@
+{
+  "income_keywords": ["зарплат", "переказ від", "надходження", "повернення", "return"],
+  "categories": [
+    { "name": "Продукти", "keywords": ["сільпо", "атб", "novus", "фора", "варус", "metro", "маркет", "продукти"] },
+    { "name": "Кафе та доставка", "keywords": ["glovo", "bolt food", "uber eats", "кава", "кав'ярня", "ресторан", "піца", "суші"] },
+    { "name": "Транспорт", "keywords": ["uber", "bolt", "uklon", "метро", "маршрут", "бензин", "wog", "окко", "парков"] },
+    { "name": "Комуналка та зв'язок", "keywords": ["київводоканал", "київтепло", "kyivstar", "lifecell", "vodafone", "інтернет"] },
+    { "name": "Підписки та софт", "keywords": ["netflix", "openai", "figma", "adobe", "google", "steam", "підписка"] },
+    { "name": "Техніка", "keywords": ["rozetka", "comfy", "apple"] },
+    { "name": "Оренда", "keywords": ["оренда", "квартир", "rent"] },
+    { "name": "Здоров'я", "keywords": ["аптек", "клінік", "стоматолог", "мед"] },
+    { "name": "Одяг", "keywords": ["zara", "h&m", "intertop", "одяг", "взуття"] },
+    { "name": "Логістика", "keywords": ["нова пошта", "ukrposhta", "meest", "делівері"] }
+  ]
+}

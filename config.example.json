@@ -1,0 +1,10 @@
+{
+  "keywords": ["вентиляц", "кондиціон", "ремонт даху"],
+  "cpv_prefixes": ["45", "42", "39"],
+  "min_amount": 100000,
+  "max_amount": 5000000,
+  "region": null,
+  "statuses": ["active.tendering"],
+  "max_pages": 3,
+  "page_limit": 100
+}
