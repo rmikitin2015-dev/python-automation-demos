@@ -1,6 +1,6 @@
 # freelance-automation-demos
 
-[![tests](https://github.com/rmikitin2015-dev/python-automation-demos/actions/workflows/tests.yml/badge.svg)](https://github.com/rmikitin2015-dev/python-automation-demos/actions/workflows/tests.yml)
+[![tests](https://github.com/rmikitin2015-dev/python-automation-demos/workflows/tests/badge.svg)](https://github.com/rmikitin2015-dev/python-automation-demos/actions/workflows/tests.yml)
 [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 П'ять невеликих інструментів на Python, які я написав самостійно: монітор тендерів, звіт із банківської виписки, Telegram-бот запису на послуги, пошук компаній для холодних контактів і монітор нових замовлень на freelance.ua зі сповіщеннями в Telegram.
