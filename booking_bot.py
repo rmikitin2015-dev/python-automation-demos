@@ -125,11 +125,18 @@ def free_days(storage: Storage, cfg: dict) -> list[date]:
     taken = storage.taken_slots()
     days = []
     today = date.today()
+    now = datetime.now()
     for offset in range(cfg["days_ahead"]):
         day = today + timedelta(days=offset)
         if day.weekday() in cfg["closed_weekdays"]:
             continue
-        if any(slot_iso(day, hour) not in taken for hour in cfg["work_hours"]):
+        # День показуємо лише тоді, коли на ньому лишився слот у майбутньому
+        # (інакше ввечері в списку з'являвся б день без жодного вільного часу).
+        if any(
+            datetime(day.year, day.month, day.day, hour, 0) > now
+            and slot_iso(day, hour) not in taken
+            for hour in cfg["work_hours"]
+        ):
             days.append(day)
     return days
 

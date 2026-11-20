@@ -1,0 +1,37 @@
+{
+  "queries": [
+    "python",
+    "парсинг",
+    "парсер",
+    "telegram бот",
+    "автоматизація",
+    "скрапінг",
+    "excel",
+    "google sheets"
+  ],
+  "keywords": [
+    "python",
+    "парс",
+    "скрап",
+    "scrap",
+    "telegram",
+    "телеграм",
+    "бот",
+    "автоматиз",
+    "excel",
+    "google sheets",
+    "таблиц",
+    "selenium",
+    "api"
+  ],
+  "excludes": [
+    "1с",
+    "верстк",
+    "дизайн"
+  ],
+  "min_budget": 500,
+  "max_budget": null,
+  "max_age_hours": 72,
+  "pages": 1,
+  "request_delay": 1.5
+}
