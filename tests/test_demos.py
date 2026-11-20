@@ -7,10 +7,14 @@
     python -m unittest discover -s tests -v
 """
 
+import contextlib
+import io
 import os
 import sys
+import tempfile
 import unittest
 from datetime import date
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -346,6 +350,69 @@ class TestProspectFinder(unittest.TestCase):
         self.assertEqual([r["company"] for r in rows], ["Велика", "Мала"])
         self.assertEqual(rows[0]["total_uah"], 500000)
         self.assertEqual(rows[1]["avg_uah"], round(3000 / 7))
+
+
+class TestOfflineDemos(unittest.TestCase):
+    """--demo читає збережені фікстури; будь-яке звернення в мережу — провал тесту."""
+
+    def _offline(self):
+        return mock.patch(
+            "urllib.request.urlopen", side_effect=AssertionError("демо не має ходити в мережу")
+        )
+
+    def _run_quiet(self, func, argv):
+        out = io.StringIO()
+        with self._offline(), contextlib.redirect_stdout(out):
+            code = func(argv)
+        return code, out.getvalue()
+
+    def test_freelance_demo_parses_fixture(self):
+        with self._offline():
+            orders = freelance_monitor.demo_orders()
+        self.assertGreaterEqual(len(orders), 5)
+        self.assertTrue(all(o["id"] and o["url"].startswith("https://") for o in orders))
+
+    def test_each_demo_runs_offline_and_writes_report(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cases = [
+                (
+                    freelance_monitor.main,
+                    ["--demo", "--all", "--db", os.path.join(tmp, "f.db"),
+                     "--csv", os.path.join(tmp, "f.csv"), "--html", os.path.join(tmp, "f.html")],
+                    ("f.csv", "f.html"),
+                ),
+                (
+                    prozorro_monitor.main,
+                    ["--demo", "--all", "--db", os.path.join(tmp, "p.db"),
+                     "--html", os.path.join(tmp, "p.html")],
+                    ("p.html",),
+                ),
+                (
+                    prospect_finder.main,
+                    ["--demo", "--out", os.path.join(tmp, "prospects")],
+                    ("prospects.csv", "prospects.html"),
+                ),
+            ]
+            for func, argv, expected in cases:
+                with self.subTest(script=func.__module__):
+                    code, printed = self._run_quiet(func, argv)
+                    self.assertEqual(code, 0, printed)
+                    self.assertIn("Демо-режим", printed)
+                    self.assertIn("Переглянуто", printed)
+                    for name in expected:
+                        self.assertTrue(os.path.exists(os.path.join(tmp, name)), name)
+
+    def test_demo_fixtures_carry_real_data(self):
+        with self._offline():
+            tenders = prozorro_monitor.demo_tenders()
+            contracts = prospect_finder.demo_objects("contracts")
+        self.assertGreaterEqual(len(tenders), 3)
+        self.assertTrue(all(t["tenderID"] for t in tenders))
+        with self._offline(), contextlib.redirect_stdout(io.StringIO()):
+            companies = prospect_finder.collect(
+                "contracts", 30, 0, 0, [], "", objects=contracts
+            )
+        self.assertGreaterEqual(len(companies), 3)
 
 
 class TestSmoke(unittest.TestCase):

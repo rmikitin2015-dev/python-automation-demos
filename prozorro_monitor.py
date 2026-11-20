@@ -152,6 +152,16 @@ def iter_tenders(cfg: dict, max_age_days: int = 60):
         time.sleep(1.0)
 
 
+FIXTURES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures")
+
+
+def demo_tenders() -> list[dict]:
+    """Тендери зі збереженого знімка API — ті самі картки, але без мережі."""
+    path = os.path.join(FIXTURES_DIR, "prozorro_tenders.json")
+    with open(path, "r", encoding="utf-8") as fh:
+        return json.load(fh)
+
+
 def tender_amount(tender: dict) -> float | None:
     value = tender.get("value") or {}
     amount = value.get("amount")
@@ -401,6 +411,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--html", help="записати HTML-звіт")
     parser.add_argument("--telegram", action="store_true", help="надіслати в Telegram")
     parser.add_argument("--all", action="store_true", help="показати всі збіги, не лише нові")
+    parser.add_argument("--demo", action="store_true", help="працювати на збереженому знімку API, без мережі")
     return parser.parse_args(argv)
 
 
@@ -431,8 +442,13 @@ def main(argv: list[str] | None = None) -> int:
 
     scanned = 0
     rows: list[dict] = []
+    if args.demo:
+        print("[i] Демо-режим: дані з fixtures/prozorro_tenders.json, мережа не використовується.")
+        source = demo_tenders()
+    else:
+        source = iter_tenders(cfg)
     try:
-        for tender in iter_tenders(cfg):
+        for tender in source:
             scanned += 1
             if not matches(tender, cfg):
                 continue
@@ -457,8 +473,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.html:
         write_html(rows, args.html, cfg)
         print(f"HTML: {args.html}")
-    if args.telegram and rows:
+    if args.telegram and rows and not args.demo:
         send_telegram(rows)
+    elif args.telegram and args.demo:
+        print("[i] У демо-режимі Telegram не надсилається.")
 
     return 0
 

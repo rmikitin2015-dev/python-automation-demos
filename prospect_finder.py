@@ -174,6 +174,16 @@ def iter_details(source: str, days: int, limit: int, delay: float):
             return
 
 
+FIXTURES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures")
+
+
+def demo_objects(source: str) -> list[dict]:
+    """Об'єкти зі збереженого знімка API — ті самі контракти/тендери, але без мережі."""
+    name = "prozorro_contracts.json" if source == "contracts" else "prozorro_tenders.json"
+    with open(os.path.join(FIXTURES_DIR, name), "r", encoding="utf-8") as fh:
+        return json.load(fh)
+
+
 def deals_from(obj: dict, source: str) -> list[dict]:
     """Нормалізує контракт або тендер у ланки «переможець + сума»."""
     codes = cpv_codes(obj)
@@ -213,8 +223,19 @@ def deals_from(obj: dict, source: str) -> list[dict]:
     return deals
 
 
-def collect(source: str, days: int, limit: int, delay: float, cpv: list[str], region: str) -> dict:
-    """Повертає агрегацію по переможцях: {edrpou: {...}}."""
+def collect(
+    source: str,
+    days: int,
+    limit: int,
+    delay: float,
+    cpv: list[str],
+    region: str,
+    objects: list[dict] | None = None,
+) -> dict:
+    """Повертає агрегацію по переможцях: {edrpou: {...}}.
+
+    objects задають у демо-режимі: тоді мережа не використовується зовсім.
+    """
     companies: dict = defaultdict(
         lambda: {
             "name": "",
@@ -231,7 +252,7 @@ def collect(source: str, days: int, limit: int, delay: float, cpv: list[str], re
     scanned = 0
     deals_count = 0
 
-    for obj in iter_details(source, days, limit, delay):
+    for obj in (objects if objects is not None else iter_details(source, days, limit, delay)):
         scanned += 1
         codes = cpv_codes(obj)
         if cpv and not any(code.startswith(tuple(cpv)) for code in codes):
@@ -394,6 +415,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--min-wins", type=int, default=1, help="мінімум перемог у компанії (типово 1)")
     parser.add_argument("--top", type=int, default=50, help="скільки компаній залишити у списку (типово 50)")
     parser.add_argument("--out", default="out/prospects", help="префікс шляху для CSV/HTML")
+    parser.add_argument("--demo", action="store_true", help="працювати на збереженому знімку API, без мережі")
     return parser.parse_args(argv)
 
 
@@ -402,8 +424,12 @@ def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
     started = time.time()
 
+    objects = None
+    if args.demo:
+        print("[i] Демо-режим: дані з fixtures/, мережа не використовується.")
+        objects = demo_objects(args.source)
     companies = collect(
-        args.source, args.days, args.limit, args.delay, args.cpv, args.region or ""
+        args.source, args.days, args.limit, args.delay, args.cpv, args.region or "", objects
     )
     rows = to_rows(companies, args.min_wins)
     rows = [r for r in rows if r["total_uah"] >= args.min_amount][: args.top]

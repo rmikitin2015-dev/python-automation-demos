@@ -207,6 +207,15 @@ def fetch_page(url: str, user_agent: str, timeout: int = 30) -> str:
         return resp.read().decode("utf-8", errors="replace")
 
 
+FIXTURES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures")
+
+
+def demo_orders() -> list[dict]:
+    """Замовлення зі збереженої сторінки — той самий розбір, але без мережі."""
+    with open(os.path.join(FIXTURES_DIR, "freelance_orders.html"), "r", encoding="utf-8") as fh:
+        return parse_orders(fh.read())
+
+
 def collect(cfg: dict) -> list[dict]:
     """Обходить сторінки списку й збирає замовлення без дублів."""
     delay = float(cfg.get("request_delay") or 0)
@@ -426,8 +435,13 @@ def run_once(args: argparse.Namespace, cfg: dict) -> int:
     store = SeenStore(args.db)
     discovered = 0
     rows: list[dict] = []
+    if getattr(args, "demo", False):
+        print("[i] Демо-режим: дані з fixtures/freelance_orders.html, мережа не використовується.")
+        source = demo_orders()
+    else:
+        source = collect(cfg)
     try:
-        for order in collect(cfg):
+        for order in source:
             discovered += 1
             if not matches(order, cfg):
                 continue
@@ -447,8 +461,10 @@ def run_once(args: argparse.Namespace, cfg: dict) -> int:
     if args.html:
         write_html(rows, args.html, cfg)
         print(f"HTML: {args.html}")
-    if args.telegram and rows:
+    if args.telegram and rows and not getattr(args, "demo", False):
         send_telegram(rows)
+    elif args.telegram and getattr(args, "demo", False):
+        print("[i] У демо-режимі Telegram не надсилається.")
     return 0
 
 
@@ -466,6 +482,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--html", help="записати HTML-звіт")
     parser.add_argument("--telegram", action="store_true", help="надіслати в Telegram")
     parser.add_argument("--all", action="store_true", help="показати всі збіги, не лише нові")
+    parser.add_argument("--demo", action="store_true", help="працювати на збереженій HTML-фікстурі, без мережі")
     parser.add_argument("--loop", type=int, default=0, help="перевіряти кожні N секунд (0 — один прогін)")
     return parser.parse_args(argv)
 
