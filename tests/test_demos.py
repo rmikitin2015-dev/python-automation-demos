@@ -16,6 +16,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import bank_report  # noqa: E402
 import booking_bot  # noqa: E402
+import freelance_monitor  # noqa: E402
 import prozorro_monitor  # noqa: E402
 import prospect_finder  # noqa: E402
 
@@ -161,6 +162,108 @@ class TestProzorroMonitor(unittest.TestCase):
         self.assertTrue(row["url"].endswith("UA-2026-11-17-000027-a"))
 
 
+ORDER_LIST_HTML = """
+<div class="j-list"><ul class="l-projectList"><li class="j-order  highlited">
+  <span class="highlited-label">гаряче</span>
+  <header class="l-project-title"><a href="https://freelance.ua/orders/298308-parser-czin-na-avito.html">Парсер цін на Авіто, Python</a></header>
+  <div class="l-project-head flex-price-tag"><span class="l-price">900 грн. </span>
+    <a href="https://freelance.ua/?tag=python-1" class="l-tag">python</a>
+    <a href="https://freelance.ua/?tag=parsing-2" class="l-tag">парсинг</a>
+  </div>
+  <article><p>Потрібен скрипт на Python, який збирає ціни та віддає їх у Google Sheets.</p></article>
+  <ul class="l-item-features"><li><i class="fa fa-clock-o"></i> 2 години тому</li>
+    <li><span>4 пропозицій</span></li></ul>
+</li><li class="j-order">
+  <header class="l-project-title"><a href="https://freelance.ua/orders/298309-logo-dlya-kawi.html">Логотип для кав'ярні</a></header>
+  <div class="l-project-head flex-price-tag"><span class="l-price">1 200 грн. </span>
+    <a href="https://freelance.ua/?tag=design-3" class="l-tag">дизайн</a>
+  </div>
+  <article><p>Шукаю дизайнера з портфоліо.</p></article>
+  <ul class="l-item-features"><li><i class="fa fa-clock-o"></i> вчора</li>
+    <li><span>11 пропозицій</span></li></ul>
+</li></ul></div>
+"""
+
+
+class TestFreelanceMonitor(unittest.TestCase):
+    def test_parse_orders_from_html(self):
+        orders = freelance_monitor.parse_orders(ORDER_LIST_HTML)
+        self.assertEqual(len(orders), 2)
+
+        first = orders[0]
+        self.assertEqual(first["id"], "298308")
+        self.assertEqual(first["title"], "Парсер цін на Авіто, Python")
+        self.assertEqual(first["budget"], 900.0)
+        self.assertEqual(first["tags"], ["python", "парсинг"])
+        self.assertEqual(first["proposals"], 4)
+        self.assertEqual(first["age_hours"], 2.0)
+        self.assertTrue(first["hot"])
+        self.assertIn("Google Sheets", first["description"])
+
+        self.assertEqual(orders[1]["budget"], 1200.0)
+        self.assertEqual(orders[1]["age_hours"], 24.0)
+        self.assertFalse(orders[1]["hot"])
+
+    def test_parse_budget_formats(self):
+        cases = {"900 грн.": 900.0, "1 200 грн": 1200.0, "80000 грн. ": 80000.0, "Договірна": None, "": None}
+        for raw, expected in cases.items():
+            with self.subTest(raw=raw):
+                self.assertEqual(freelance_monitor.parse_budget(raw), expected)
+
+    def test_parse_age_hours(self):
+        cases = {
+            "щойно": 0.0,
+            "30 хвилин тому": 0.5,
+            "3 години тому": 3.0,
+            "вчора": 24.0,
+            "3 днів тому": 72.0,
+            "2 тижні тому": 336.0,
+            "": None,
+        }
+        for raw, expected in cases.items():
+            with self.subTest(raw=raw):
+                self.assertEqual(freelance_monitor.parse_age_hours(raw), expected)
+
+    def test_build_url(self):
+        self.assertEqual(freelance_monitor.build_url(None, 1), "https://freelance.ua/orders/")
+        self.assertEqual(freelance_monitor.build_url("python", 1), "https://freelance.ua/orders/?q=python")
+        self.assertIn("q=telegram+%D0%B1%D0%BE%D1%82", freelance_monitor.build_url("telegram бот", 2))
+        self.assertIn("page=2", freelance_monitor.build_url("python", 2))
+
+    def test_filters(self):
+        cfg = dict(freelance_monitor.DEFAULT_CONFIG)
+        cfg.update({"keywords": ["python", "парс"], "min_budget": 500, "max_age_hours": 72})
+        orders = freelance_monitor.parse_orders(ORDER_LIST_HTML)
+        self.assertTrue(freelance_monitor.matches(orders[0], cfg))
+        self.assertFalse(freelance_monitor.matches(orders[1], cfg))  # немає ключових слів
+
+        cfg_low = dict(cfg, min_budget=1000)
+        self.assertFalse(freelance_monitor.matches(orders[0], cfg_low))  # 900 < 1000
+
+        cfg_old = dict(cfg, max_age_hours=24)
+        old_order = dict(orders[0], age_hours=48.0)
+        self.assertFalse(freelance_monitor.matches(old_order, cfg_old))
+
+        cfg_exclude = dict(cfg, excludes=["sheets"])
+        self.assertFalse(freelance_monitor.matches(orders[0], cfg_exclude))
+
+    def test_seen_store_dedup(self):
+        store = freelance_monitor.SeenStore(":memory:")
+        self.addCleanup(store.close)
+        order = freelance_monitor.parse_orders(ORDER_LIST_HTML)[0]
+
+        self.assertTrue(store.is_new(order["id"]))
+        store.remember(order)
+        self.assertFalse(store.is_new(order["id"]))
+
+    def test_telegram_text(self):
+        row = freelance_monitor.format_row(freelance_monitor.parse_orders(ORDER_LIST_HTML)[0])
+        text = freelance_monitor.telegram_text(row)
+        self.assertIn("298308-parser-czin-na-avito", text)
+        self.assertIn("900", text)
+        self.assertIn("freelance.ua/orders/", text)
+
+
 class TestProspectFinder(unittest.TestCase):
     def test_contract_deal_uses_public_tender_id(self):
         contract = {
@@ -210,7 +313,7 @@ class TestProspectFinder(unittest.TestCase):
 
 class TestSmoke(unittest.TestCase):
     def test_modules_importable_without_side_effects(self):
-        for module in (bank_report, booking_bot, prozorro_monitor, prospect_finder):
+        for module in (bank_report, booking_bot, freelance_monitor, prozorro_monitor, prospect_finder):
             self.assertTrue(callable(module.main), module.__name__)
 
     def test_unit_helpers(self):
