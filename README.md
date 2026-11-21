@@ -20,6 +20,14 @@ HTML-звіт монітора замовлень — справжній зап�
 
 ![HTML-звіт монітора замовлень freelance.ua](portfolio/freelance-monitor.png)
 
+HTML-звіт із тестової виписки `sample_statement.csv`: 31 транзакція, надходження 52 199,00 ₴, витрати 37 418,64 ₴, сальдо і частки категорій.
+
+![HTML-звіт із банківської виписки](portfolio/bank-report.png)
+
+HTML-звіт монітора тендерів: фільтр за словом «ремонт» — знайдено один тендер на 192 308 ₴.
+
+![HTML-звіт монітора тендерів Prozorro](portfolio/tenders-monitor.png)
+
 Тести — 28 перевірок без мережі:
 
 ![Вивід тестів](portfolio/tests-output.png)
@@ -79,6 +87,15 @@ python booking_bot.py
 
 Три скрипти, які типово ходять у мережу, мають `--demo`: вони читають збережені відповіді з `fixtures/` і проходять той самий шлях — розбір, фільтри, звіт. Нічого не завантажується й нічого не надсилається.
 
+Усі три — однією командою, звіти в `out/demo`:
+
+```bash
+python demo.py
+# -> out/demo/orders.csv, orders.html, tenders.csv, tenders.html, prospects.csv, prospects.html
+```
+
+Кожен окремо:
+
 ```bash
 python freelance_monitor.py --demo --all --html out/demo/orders.html
 python prozorro_monitor.py --demo --all --csv out/demo/tenders.csv --html out/demo/tenders.html
@@ -93,7 +110,7 @@ python prospect_finder.py --demo --out out/demo/prospects
 python -m unittest discover -s tests -v
 ```
 
-Той самий запуск виконує GitHub Actions на кожен push і pull request (Python 3.10, 3.12, 3.13) — статус видно на бейджі вгорі й на сторінці [Actions](https://github.com/rmikitin2015-dev/python-automation-demos/actions).
+Той самий запуск виконує GitHub Actions на кожен push і pull request (Python 3.10, 3.12, 3.13), а job `demo` проганяє офлайн-демо й зберігає звіти артефактом — статус видно на бейджі вгорі й на сторінці [Actions](https://github.com/rmikitin2015-dev/python-automation-demos/actions).
 
 28 тестів, без мережі: тести демо-режиму окремо перевіряють, що кожен `--demo` відпрацьовує і пише звіт при підміненому `urlopen`, який кидає помилку: розбір сум і категорій виписки, логіка запису (включно з відмовою у подвійному записі та спробою скасувати чужий запис), фільтри тендерів, розбір HTML-сторінки замовлень freelance.ua на фікстурі, фільтри за бюджетом/свіжістю/словами, дедуплікація в SQLite, текст сповіщення, нормалізація контрактів і сортування списку компаній.
 
@@ -102,6 +119,7 @@ python -m unittest discover -s tests -v
 ```
 bank_report.py          звіт із виписки
 booking_bot.py          Telegram-бот запису
+demo.py                 усі три офлайн-демо однією командою
 prozorro_monitor.py     монітор закупівель
 prospect_finder.py      пошук компаній для контактів
 freelance_monitor.py    монітор замовлень freelance.ua
