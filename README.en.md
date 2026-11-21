@@ -1,6 +1,7 @@
 # freelance-automation-demos
 
 [![tests](https://github.com/rmikitin2015-dev/python-automation-demos/workflows/tests/badge.svg)](https://github.com/rmikitin2015-dev/python-automation-demos/actions/workflows/tests.yml)
+[![version](https://img.shields.io/github/v/tag/rmikitin2015-dev/python-automation-demos)](https://github.com/rmikitin2015-dev/python-automation-demos/releases/tag/v1.0.0)
 [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 Five small Python tools I wrote myself: a procurement monitor, a bank-statement report, a Telegram booking bot, a company finder for cold outreach, and a job-feed monitor with Telegram alerts.
