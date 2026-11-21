@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Руслан Микитин — автоматизація на Python</title>
+<style>
+  :root {
+    --ink: #14181d;
+    --muted: #5b6672;
+    --line: #e2e6ea;
+    --accent: #0f6b4f;
+    --bg: #fbfbf9;
+    --card: #ffffff;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font: 16px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+  }
+  .wrap { max-width: 900px; margin: 0 auto; padding: 56px 24px 64px; }
+  header { border-bottom: 1px solid var(--line); padding-bottom: 28px; }
+  h1 { font-size: 30px; line-height: 1.2; margin: 0 0 8px; letter-spacing: -0.02em; }
+  .role { color: var(--accent); font-weight: 600; margin: 0 0 12px; }
+  .lead { color: var(--muted); margin: 0; max-width: 60ch; }
+  h2 {
+    font-size: 13px; text-transform: uppercase; letter-spacing: 0.08em;
+    color: var(--muted); font-weight: 600; margin: 40px 0 16px;
+  }
+  .tasks { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
+  .task {
+    background: var(--card); border: 1px solid var(--line); border-radius: 10px;
+    padding: 20px; display: flex; flex-direction: column; gap: 12px;
+  }
+  .task h3 { font-size: 17px; margin: 0; line-height: 1.3; }
+  .task ul { margin: 0; padding-left: 18px; color: var(--muted); }
+  .task li { margin-bottom: 4px; }
+  .task li b { color: var(--ink); font-variant-numeric: tabular-nums; }
+  .price {
+    margin-top: auto; padding-top: 10px; border-top: 1px solid var(--line);
+    font-weight: 600; font-variant-numeric: tabular-nums;
+  }
+  .price span { display: block; font-weight: 400; font-size: 13px; color: var(--muted); }
+  .contact { margin-top: 44px; border-top: 1px solid var(--line); padding-top: 24px; }
+  .contact p { margin: 0 0 10px; color: var(--muted); }
+  a { color: var(--accent); }
+  a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 3px; }
+  .links { display: flex; flex-wrap: wrap; gap: 8px 20px; font-weight: 600; }
+  footer { margin-top: 28px; color: var(--muted); font-size: 13px; }
+  @media (max-width: 520px) { .wrap { padding-top: 36px; } h1 { font-size: 25px; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <h1>Руслан Микитин</h1>
+    <p class="role">Автоматизація рутини на Python</p>
+    <p class="lead">Невеликі інструменти під конкретну задачу: парсинг і моніторинг, звіти з виписок і таблиць, Telegram-боти. Тільки стандартна бібліотека — без сторонніх залежностей і платних сервісів.</p>
+  </header>
+
+  <h2>Що вже зроблено</h2>
+
+  <div class="tasks">
+
+    <article class="task">
+      <h3>Монітор нових замовлень</h3>
+      <ul>
+        <li>живий прогін: <b>3 сторінки → 30 замовлень → 6</b> пройшли фільтри</li>
+        <li>фільтри за словами, бюджетом і свіжістю, дублі — в SQLite</li>
+        <li>CSV + HTML-звіт, кожне нове замовлення — в Telegram</li>
+      </ul>
+      <div class="price">2 000–4 000 ₴<span>монітор із сповіщеннями, 2–3 дні</span></div>
+    </article>
+
+    <article class="task">
+      <h3>Звіт із банківської виписки</h3>
+      <ul>
+        <li>тестова виписка: <b>31 транзакція</b>, витрати <b>37 418,64 ₴</b></li>
+        <li>надходження 52 199,00 ₴, середній чек <b>1 336,38 ₴</b></li>
+        <li>три файли на виході: сводка, CSV, HTML; категорії — в JSON</li>
+      </ul>
+      <div class="price">1 500–2 000 ₴<span>звіт за вашими категоріями, 1–2 дні</span></div>
+    </article>
+
+    <article class="task">
+      <h3>Telegram-бот запису</h3>
+      <ul>
+        <li>вільні слоти, підтвердження, скасування клієнтом</li>
+        <li>подвійний запис на слот відхиляється, чужу заявку скасувати не можна</li>
+        <li><b>28 тестів</b> без мережі, повний діалог відтворюється без токена</li>
+      </ul>
+      <div class="price">від 8 000 ₴<span>бот під ваші послуги й графік, 2–4 дні</span></div>
+    </article>
+
+  </div>
+
+  <div class="contact">
+    <h2 style="margin-top:0">Контакт</h2>
+    <p>Опишіть, що є на вході (сайт, виписка, таблиця, API), що має бути на виході і як часто це повторюється — назву ціну й строк. Демо на ваших даних показую до оплати.</p>
+    <div class="links">
+      <a href="mailto:r.mikitin2015@gmail.com">r.mikitin2015@gmail.com</a>
+      <a href="https://github.com/rmikitin2015-dev/python-automation-demos">Код на GitHub</a>
+      <a href="https://github.com/rmikitin2015-dev/python-automation-demos/blob/main/docs/cases.md">Кейси з цифрами</a>
+    </div>
+    <footer>П’ять інструментів, 28 тестів, нуль сторонніх залежностей, Python 3.10+.</footer>
+  </div>
+
+</div>
+</body>
+</html>
