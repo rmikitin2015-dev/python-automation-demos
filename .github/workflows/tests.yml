@@ -21,3 +21,25 @@ jobs:
 
       - name: unittest
         run: python -m unittest discover -s tests -v
+
+  demo:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: offline demos
+        run: |
+          python freelance_monitor.py --demo --all --html out/demo/orders.html
+          python prozorro_monitor.py --demo --all --csv out/demo/tenders.csv --html out/demo/tenders.html
+          python prospect_finder.py --demo --out out/demo/prospects
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: demo-reports
+          path: out/demo/
+          if-no-files-found: error
