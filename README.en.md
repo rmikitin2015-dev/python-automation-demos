@@ -52,7 +52,7 @@ python prospect_finder.py --demo --out out/demo/prospects
 python -m unittest discover -s tests -v
 ```
 
-31 tests, no network: 3.10, 3.12 and 3.13 in GitHub Actions on every push and pull request.
+40 tests, no network: 3.10, 3.12 and 3.13 in GitHub Actions on every push and pull request.
 
 ## Limitations (honest)
 

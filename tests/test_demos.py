@@ -9,8 +9,10 @@
 
 import contextlib
 import io
+import json
 import os
 import sys
+import urllib.error
 import tempfile
 import unittest
 from datetime import date, datetime
@@ -190,6 +192,75 @@ ORDER_LIST_HTML = """
 """
 
 
+class FakeTelegramResponse:
+    """Мінімальна заглушка відповіді Telegram API."""
+
+    def __init__(self, payload: dict):
+        self._payload = payload
+
+    def read(self) -> bytes:
+        return json.dumps(self._payload).encode("utf-8")
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc_info):
+        return False
+
+
+def monitor_orders(count: int) -> list[dict]:
+    """count замовлень, які проходять будь-який фільтр."""
+    return [
+        {
+            "id": f"t{index:02d}",
+            "title": f"Парсер {index}, Python",
+            "url": f"https://freelance.ua/orders/t{index:02d}.html",
+            "budget": 900.0,
+            "budget_raw": "900 грн.",
+            "description": "потрібен скрипт",
+            "age_label": "щойно",
+            "age_hours": 0.0,
+            "proposals": 1,
+            "tags": ["python"],
+            "hot": False,
+        }
+        for index in range(1, count + 1)
+    ]
+
+
+class FakeCurlResult:
+    """Мінімальна заглушка subprocess.run для curl."""
+
+    def __init__(self, code: int, out: bytes = b"", err: bytes = b""):
+        self.returncode = code
+        self.stdout = out
+        self.stderr = err
+
+
+def seen_ids(store, orders) -> list[str]:
+    """Які з цих замовлень уже позначені в базі."""
+    marked = []
+    for order in orders:
+        row = store.conn.execute("SELECT 1 FROM seen WHERE id = ?", (order["id"],)).fetchone()
+        if row is not None:
+            marked.append(order["id"])
+    return marked
+
+
+def unfiltered_config() -> dict:
+    return freelance_monitor.normalize_filters(
+        dict(
+            freelance_monitor.DEFAULT_CONFIG,
+            keywords=[],
+            excludes=[],
+            min_budget=None,
+            max_budget=None,
+            max_age_hours=None,
+            max_bids=None,
+        )
+    )
+
+
 class TestFreelanceMonitor(unittest.TestCase):
     def test_parse_orders_from_html(self):
         orders = freelance_monitor.parse_orders(ORDER_LIST_HTML)
@@ -347,14 +418,170 @@ class TestFreelanceMonitor(unittest.TestCase):
         order = freelance_monitor.parse_orders(ORDER_LIST_HTML)[0]
         self.assertTrue(freelance_monitor.matches(order, cfg))
 
-    def test_seen_store_dedup(self):
+    def test_seen_store_claim_dedups_and_releases(self):
         store = freelance_monitor.SeenStore(":memory:")
         self.addCleanup(store.close)
         order = freelance_monitor.parse_orders(ORDER_LIST_HTML)[0]
 
-        self.assertTrue(store.is_new(order["id"]))
-        store.remember(order)
-        self.assertFalse(store.is_new(order["id"]))
+        self.assertTrue(store.claim(order))     # нове — і одразу позначене
+        self.assertFalse(store.claim(order))    # повторний прогін не дає дубля
+        self.assertEqual(seen_ids(store, [order]), [order["id"]])
+
+        store.release(order["id"])             # не дійшло до користувача
+        self.assertTrue(store.claim(order))
+        self.assertEqual(seen_ids(store, [order]), [order["id"]])
+
+    def test_missing_proposals_is_unknown_not_zero(self):
+        """Без згадки про пропозиції кількість невідома (None), а не «0 пропозицій»."""
+        html = ORDER_LIST_HTML.replace("<li><span>4 пропозицій</span></li>", "")
+        order = freelance_monitor.parse_orders(html)[0]
+
+        self.assertIsNone(order["proposals"])
+        self.assertEqual(freelance_monitor.format_row(order)["proposals"], "")
+
+        cfg = freelance_monitor.normalize_filters(dict(freelance_monitor.DEFAULT_CONFIG, max_bids=9))
+        self.assertFalse(freelance_monitor._bids_ok(order, cfg))
+
+    def test_telegram_limit_keeps_unsent_matches_new(self):
+        """12 збігів, Telegram віддає 10: решта не має позначатись як бачена."""
+        orders = monitor_orders(12)
+        cfg = unfiltered_config()
+        calls: list[str] = []
+
+        def fake_urlopen(request, timeout=None):
+            calls.append(request.full_url)
+            return FakeTelegramResponse({"ok": True})
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = os.path.join(tmp, "seen.db")
+            args = freelance_monitor.parse_args(["--db", db, "--telegram"])
+            env = {"TELEGRAM_BOT_TOKEN": "test-token", "TELEGRAM_CHAT_ID": "42"}
+            patched = (
+                mock.patch.dict(os.environ, env),
+                mock.patch("urllib.request.urlopen", fake_urlopen),
+                mock.patch.object(freelance_monitor, "collect", lambda cfg: orders),
+                contextlib.redirect_stdout(io.StringIO()),
+            )
+            with patched[0], patched[1], patched[2], patched[3]:
+                freelance_monitor.run_once(args, cfg)
+                self.assertEqual(len(calls), 10)
+
+                store = freelance_monitor.SeenStore(db)
+                try:
+                    sent = seen_ids(store, orders)
+                finally:
+                    store.close()
+                self.assertEqual(sent, [f"t{index:02d}" for index in range(1, 11)])
+
+                # другий прогін доносить решту й нічого не дублює
+                freelance_monitor.run_once(args, cfg)
+                self.assertEqual(len(calls), 12)
+
+            store = freelance_monitor.SeenStore(db)
+            try:
+                all_sent = seen_ids(store, orders)
+            finally:
+                store.close()
+
+        self.assertEqual(all_sent, [f"t{index:02d}" for index in range(1, 13)])
+
+    def test_all_pages_failing_is_network_error_not_empty_result(self):
+        """Повний збій мережі — це помилка й код 2, а не «0 нових замовлень» з кодом 0."""
+        cfg = freelance_monitor.normalize_filters(dict(freelance_monitor.DEFAULT_CONFIG, pages=2))
+        boom = urllib.error.URLError("мережа недоступна")
+        patch_fetch = mock.patch.object(freelance_monitor, "fetch_page", side_effect=boom)
+
+        with patch_fetch, contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(freelance_monitor.NetworkError) as ctx:
+                freelance_monitor.collect(cfg)
+            with contextlib.redirect_stdout(io.StringIO()):
+                code = freelance_monitor.main(["--pages", "2", "--db", ":memory:"])
+
+        self.assertIn("не прочитано жодної сторінки", str(ctx.exception))
+        self.assertEqual(code, 2)
+
+    def test_one_readable_page_is_not_a_network_error(self):
+        cfg = freelance_monitor.normalize_filters(dict(freelance_monitor.DEFAULT_CONFIG, pages=2))
+        answers = iter(["<html></html>", urllib.error.URLError("timeout")])
+
+        def fake_fetch(url, user_agent, timeout=30):
+            answer = next(answers)
+            if isinstance(answer, Exception):
+                raise answer
+            return answer
+
+        patch_fetch = mock.patch.object(freelance_monitor, "fetch_page", fake_fetch)
+        with patch_fetch, contextlib.redirect_stderr(io.StringIO()):
+            orders = freelance_monitor.collect(cfg)
+
+        self.assertEqual(orders, [])
+
+    def test_curl_failure_names_url_and_uses_fail_flag(self):
+        """HTTP-помилка в curl не має виглядати як успіх з порожньою сторінкою."""
+        captured: dict = {}
+        url = "https://freelancehunt.com/ua/projects?page=2"
+
+        def fake_run(argv, **kwargs):
+            captured["argv"] = argv
+            return FakeCurlResult(22)
+
+        with (
+            mock.patch.object(freelance_monitor.shutil, "which", lambda name: "curl"),
+            mock.patch.object(freelance_monitor.subprocess, "run", fake_run),
+        ):
+            with self.assertRaises(OSError) as ctx:
+                freelance_monitor.fetch_with_curl(url, "UA")
+
+        self.assertIn("--fail", captured["argv"])
+        self.assertIn(url, str(ctx.exception))
+        self.assertIn("22", str(ctx.exception))
+
+    def test_curl_success_returns_body(self):
+        def fake_run(argv, **kwargs):
+            return FakeCurlResult(0, out="<html>ok</html>".encode("utf-8"))
+
+        with (
+            mock.patch.object(freelance_monitor.shutil, "which", lambda name: "curl"),
+            mock.patch.object(freelance_monitor.subprocess, "run", fake_run),
+        ):
+            body = freelance_monitor.fetch_with_curl("https://example.com/", "UA")
+
+        self.assertEqual(body, "<html>ok</html>")
+
+    def test_all_flag_does_not_mark_orders_seen(self):
+        """Діагностичний --all не має ламати дедуплікацію: після нього все ще нове."""
+        orders = monitor_orders(2)
+        cfg = unfiltered_config()
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = os.path.join(tmp, "seen.db")
+            collect_stub = mock.patch.object(freelance_monitor, "collect", lambda cfg: orders)
+            with collect_stub, contextlib.redirect_stdout(io.StringIO()):
+                all_args = freelance_monitor.parse_args(["--db", db, "--all"])
+                freelance_monitor.run_once(all_args, cfg)
+                freelance_monitor.run_once(all_args, cfg)
+
+            store = freelance_monitor.SeenStore(db)
+            try:
+                after_all = seen_ids(store, orders)
+            finally:
+                store.close()
+            self.assertEqual(after_all, [])
+
+            # а звичайний прогін ту саму базу заповнює
+            with collect_stub, contextlib.redirect_stdout(io.StringIO()):
+                normal_args = freelance_monitor.parse_args(["--db", db])
+                freelance_monitor.run_once(normal_args, cfg)
+
+            store = freelance_monitor.SeenStore(db)
+            try:
+                after_normal = seen_ids(store, orders)
+                rows = store.conn.execute("SELECT COUNT(*) FROM seen").fetchone()[0]
+            finally:
+                store.close()
+
+        self.assertEqual(after_normal, ["t01", "t02"])
+        self.assertEqual(rows, 2)
 
     def test_telegram_text(self):
         row = freelance_monitor.format_row(freelance_monitor.parse_orders(ORDER_LIST_HTML)[0])
@@ -431,6 +658,39 @@ class TestOfflineDemos(unittest.TestCase):
             orders = freelance_monitor.demo_orders()
         self.assertGreaterEqual(len(orders), 5)
         self.assertTrue(all(o["id"] and o["url"].startswith("https://") for o in orders))
+
+    def test_demo_fixture_follows_source(self):
+        """--demo без --source — freelance.ua, з --source freelancehunt — його фікстура."""
+        with self._offline():
+            freelance = freelance_monitor.demo_orders()
+            hunt = freelance_monitor.demo_orders("freelancehunt")
+
+        self.assertGreaterEqual(len(freelance), 5)
+        self.assertTrue(all("freelance.ua" in o["url"] for o in freelance))
+        self.assertEqual([o["id"] for o in hunt], ["1665986", "1665959", "1666006"])
+        self.assertTrue(all(o["site"] == "Freelancehunt" for o in hunt))
+
+    def test_freelancehunt_demo_runs_offline(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db = os.path.join(tmp, "fh.db")
+            html_path = os.path.join(tmp, "fh.html")
+            argv = ["--demo", "--source", "freelancehunt", "--db", db, "--html", html_path]
+
+            code, printed = self._run_quiet(freelance_monitor.main, argv)
+            self.assertEqual(code, 0, printed)
+            self.assertIn("freelancehunt_orders.html", printed)
+            self.assertIn("Нових за фільтрами: 2", printed)
+
+            with open(html_path, "r", encoding="utf-8") as fh:
+                html_text = fh.read()
+
+            # другий прогін на тій самій базі — нуль нових (дедуплікація працює)
+            again, printed_again = self._run_quiet(freelance_monitor.main, argv)
+            self.assertEqual(again, 0, printed_again)
+            self.assertIn("Нових за фільтрами: 0", printed_again)
+
+        self.assertIn("Freelancehunt", html_text)
+        self.assertIn("1666006", html_text)
 
     def test_each_demo_runs_offline_and_writes_report(self):
         with tempfile.TemporaryDirectory() as tmp:

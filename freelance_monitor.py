@@ -209,7 +209,9 @@ def parse_orders(page_html: str) -> list[dict]:
                 "description": clean_text(desc_match.group(1)) if desc_match else "",
                 "age_label": clean_text(age_match.group(1)) if age_match else "",
                 "age_hours": parse_age_hours(age_match.group(1)) if age_match else None,
-                "proposals": int(proposals_match.group(1)) if proposals_match else 0,
+                # Немає згадки про пропозиції — кількість невідома (None), а не 0:
+                # інакше фільтр max_bids вважав би таке замовлення «без ставок».
+                "proposals": int(proposals_match.group(1)) if proposals_match else None,
                 "tags": tags,
                 "hot": bool(HOT_RE.search(card)),
             }
@@ -338,27 +340,42 @@ def fetch_with_curl(url: str, user_agent: str, timeout: int = 30) -> str:
     """Freelancehunt відхиляє urllib (403), тому другий шанс — curl із браузерним UA."""
     curl = shutil.which("curl")
     if not curl:
-        raise OSError("curl не знайдено, а сайт відповів 403")
+        raise OSError(f"curl не знайдено, а {url} відмовив urllib (403)")
     proc = subprocess.run(
         [
-            curl, "-sSL", "--max-time", str(timeout),
+            curl, "-sSL", "--fail", "--max-time", str(timeout),
             "-A", user_agent, "-H", "Accept-Language: uk-UA,uk;q=0.9", url,
         ],
         capture_output=True,
     )
     if proc.returncode != 0:
         detail = proc.stderr.decode("utf-8", "replace").strip()
-        raise OSError(detail or f"curl завершився з кодом {proc.returncode}")
+        reason = detail or f"curl завершився з кодом {proc.returncode} (HTTP 4xx/5xx або обрив)"
+        raise OSError(f"{url}: {reason}")
     return proc.stdout.decode("utf-8", errors="replace")
 
 
 FIXTURES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures")
 
 
-def demo_orders() -> list[dict]:
-    """Замовлення зі збереженої сторінки — той самий розбір, але без мережі."""
-    with open(os.path.join(FIXTURES_DIR, "freelance_orders.html"), "r", encoding="utf-8") as fh:
-        return parse_orders(fh.read())
+class NetworkError(RuntimeError):
+    """Жодної сторінки списку не вдалося прочитати — це збій мережі, а не «0 нових»."""
+
+
+DEMO_FIXTURES = {
+    "freelance": "freelance_orders.html",
+    "freelancehunt": "freelancehunt_orders.html",
+}
+
+
+def demo_orders(source: str = "freelance") -> list[dict]:
+    """Замовлення зі збереженої сторінки цього джерела — той самий розбір, але без мережі."""
+    fixture = DEMO_FIXTURES.get(source, DEMO_FIXTURES["freelance"])
+    with open(os.path.join(FIXTURES_DIR, fixture), "r", encoding="utf-8") as fh:
+        page_html = fh.read()
+    if fixture == DEMO_FIXTURES["freelancehunt"]:
+        return parse_fh_orders(page_html)
+    return parse_orders(page_html)
 
 
 def collect(cfg: dict) -> list[dict]:
@@ -370,19 +387,29 @@ def collect(cfg: dict) -> list[dict]:
     parser = parse_fh_orders if source == "freelancehunt" else parse_orders
 
     collected: dict[str, dict] = {}
+    read_ok = 0
+    errors = 0
     for page in range(1, pages + 1):
         url = build_url(page, source)
         try:
             page_html = fetch_page(url, ua)
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
             print(f"[!] Не вдалося прочитати {url}: {exc}", file=sys.stderr)
+            errors += 1
             continue
 
+        read_ok += 1
         for order in parser(page_html):
             collected.setdefault(order["id"], order)
 
         if delay:
             time.sleep(delay)
+
+    if not read_ok:
+        raise NetworkError(
+            f"не прочитано жодної сторінки з {pages} (помилок: {errors}) — "
+            "це збій мережі, а не «0 нових замовлень»"
+        )
 
     orders = list(collected.values())
     if source == "freelancehunt" and cfg.get("resolve_publish_time"):
@@ -509,12 +536,13 @@ class SeenStore:
         )
         self.conn.commit()
 
-    def is_new(self, order_id: str) -> bool:
-        row = self.conn.execute("SELECT 1 FROM seen WHERE id = ?", (order_id,)).fetchone()
-        return row is None
+    def claim(self, order: dict) -> bool:
+        """True — замовлення нове й тепер позначене; False — воно вже було.
 
-    def remember(self, order: dict) -> None:
-        self.conn.execute(
+        Один INSERT OR IGNORE замість пари is_new()/remember(): перевірка й
+        запис — одна атомарна операція, без вікна між ними.
+        """
+        cursor = self.conn.execute(
             "INSERT OR IGNORE INTO seen (id, title, budget, url, first_seen) VALUES (?, ?, ?, ?, ?)",
             (
                 order.get("id") or "",
@@ -524,6 +552,14 @@ class SeenStore:
                 datetime.now(timezone.utc).isoformat(timespec="seconds"),
             ),
         )
+        return cursor.rowcount == 1
+
+    def release(self, order_id: str) -> None:
+        """Знімає позначку, якщо замовлення так і не дійшло до користувача."""
+        self.conn.execute("DELETE FROM seen WHERE id = ?", (order_id,))
+
+    def commit(self) -> None:
+        """Один commit на прогін замість commit на кожен рядок."""
         self.conn.commit()
 
     def close(self) -> None:
@@ -630,14 +666,23 @@ def telegram_text(row: dict) -> str:
     return "\n".join(parts)
 
 
-def send_telegram(rows: list[dict]) -> None:
+TELEGRAM_MAX_MESSAGES = 10
+
+
+def send_telegram(rows: list[dict]) -> list[dict] | None:
+    """Надсилає до TELEGRAM_MAX_MESSAGES повідомлень за прогін.
+
+    Повертає саме ті рядки, які дійшли (їх можна позначати як бачені). None —
+    Telegram не налаштований, тоді єдиний «канал» — це консоль/CSV/HTML.
+    """
     token = os.environ.get("TELEGRAM_BOT_TOKEN")
     chat_id = os.environ.get("TELEGRAM_CHAT_ID")
     if not token or not chat_id:
         print("[i] TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID не задані — пропускаю Telegram.")
-        return
+        return None
 
-    for row in rows[:10]:
+    delivered: list[dict] = []
+    for row in rows[:TELEGRAM_MAX_MESSAGES]:
         data = urllib.parse.urlencode(
             {"chat_id": chat_id, "text": telegram_text(row), "disable_web_page_preview": "false"}
         ).encode()
@@ -647,45 +692,66 @@ def send_telegram(rows: list[dict]) -> None:
                 payload = json.loads(resp.read().decode("utf-8"))
             if not payload.get("ok"):
                 print(f"[!] Telegram відповів помилкою: {payload}", file=sys.stderr)
+                continue
         except urllib.error.URLError as exc:
             print(f"[!] Telegram недоступний: {exc}", file=sys.stderr)
-            return
+            break
+        delivered.append(row)
+    return delivered
 
 
 def run_once(args: argparse.Namespace, cfg: dict) -> int:
     store = SeenStore(args.db)
     discovered = 0
-    rows: list[dict] = []
-    if getattr(args, "demo", False):
-        print("[i] Демо-режим: дані з fixtures/freelance_orders.html, мережа не використовується.")
-        source = demo_orders()
-    else:
-        source = collect(cfg)
+    pairs: list[tuple[dict, dict]] = []
     try:
+        if getattr(args, "demo", False):
+            demo_source = str(cfg.get("source") or "freelance")
+            fixture = DEMO_FIXTURES.get(demo_source, DEMO_FIXTURES["freelance"])
+            print(f"[i] Демо-режим ({demo_source}): дані з fixtures/{fixture}, мережа не використовується.")
+            source = demo_orders(demo_source)
+        else:
+            source = collect(cfg)
         for order in source:
             discovered += 1
             if not matches(order, cfg):
                 continue
-            if not args.all and not store.is_new(order["id"]):
-                continue
-            rows.append(format_row(order))
-            store.remember(order)
+            if args.all or store.claim(order):
+                pairs.append((order, format_row(order)))
+
+        rows = [row for _, row in pairs]
+        print(f"Переглянуто замовлень: {discovered}. Нових за фільтрами: {len(rows)}.")
+        print_rows(rows)
+
+        if args.csv and rows:
+            write_csv(rows, args.csv)
+            print(f"\nCSV: {args.csv}")
+        if args.html:
+            write_html(rows, args.html, cfg)
+            print(f"HTML: {args.html}")
+
+        delivered: list[dict] | None = None
+        if args.telegram and rows and not getattr(args, "demo", False):
+            delivered = send_telegram(rows)
+        elif args.telegram and getattr(args, "demo", False):
+            print("[i] У демо-режимі Telegram не надсилається.")
+
+        if not args.all:
+            # Збіги понад ліміт Telegram не мають лишатись «баченими»: знімаємо
+            # позначку, щоб вони пішли наступним прогоном.
+            if delivered is not None:
+                delivered_ids = {row["id"] for row in delivered}
+                postponed = [row["id"] for _, row in pairs if row["id"] not in delivered_ids]
+                for order_id in postponed:
+                    store.release(order_id)
+                if postponed:
+                    print(
+                        f"[i] {len(postponed)} збіг(ів) не пішли в Telegram (ліміт "
+                        f"{TELEGRAM_MAX_MESSAGES} за прогін) — лишились новими й підуть наступного разу."
+                    )
+            store.commit()
     finally:
         store.close()
-
-    print(f"Переглянуто замовлень: {discovered}. Нових за фільтрами: {len(rows)}.")
-    print_rows(rows)
-
-    if args.csv and rows:
-        write_csv(rows, args.csv)
-        print(f"\nCSV: {args.csv}")
-    if args.html:
-        write_html(rows, args.html, cfg)
-        print(f"HTML: {args.html}")
-    if args.telegram and rows and not getattr(args, "demo", False):
-        send_telegram(rows)
-    elif args.telegram and getattr(args, "demo", False):
-        print("[i] У демо-режимі Telegram не надсилається.")
     return 0
 
 
@@ -706,7 +772,7 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--csv", help="записати результат у CSV")
     parser.add_argument("--html", help="записати HTML-звіт")
     parser.add_argument("--telegram", action="store_true", help="надіслати в Telegram")
-    parser.add_argument("--all", action="store_true", help="показати всі збіги, не лише нові")
+    parser.add_argument("--all", action="store_true", help="показати всі збіги, не лише нові (дедуплікацію не змінює)")
     parser.add_argument("--demo", action="store_true", help="працювати на збереженій HTML-фікстурі, без мережі")
     parser.add_argument("--loop", type=int, default=0, help="перевіряти кожні N секунд (0 — один прогін)")
     return parser.parse_args(argv)
@@ -740,11 +806,20 @@ def main(argv: list[str] | None = None) -> int:
     cfg = normalize_filters(cfg)
 
     if args.loop > 0:
-        while True:
-            run_once(args, cfg)
-            print(f"\n[i] Наступна перевірка через {args.loop} с. Ctrl+C — вихід.")
-            time.sleep(args.loop)
-    return run_once(args, cfg)
+        try:
+            while True:
+                run_once(args, cfg)
+                print(f"\n[i] Наступна перевірка через {args.loop} с. Ctrl+C — вихід.")
+                time.sleep(args.loop)
+        except NetworkError as exc:
+            print(f"[!] {exc}", file=sys.stderr)
+            return 2
+
+    try:
+        return run_once(args, cfg)
+    except NetworkError as exc:
+        print(f"[!] {exc}", file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":
