@@ -1,0 +1,25 @@
+{
+  "source": "freelancehunt",
+  "keywords": [
+    "парс",
+    "бот",
+    "python",
+    "автоматиз",
+    "інтеграц",
+    "api"
+  ],
+  "excludes": [
+    "1с",
+    "верстк",
+    "копірайт"
+  ],
+  "word_match": "prefix",
+  "min_budget": null,
+  "max_budget": null,
+  "max_bids": 9,
+  "max_age_hours": null,
+  "pages": 3,
+  "request_delay": 1.5,
+  "resolve_publish_time": true,
+  "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+}

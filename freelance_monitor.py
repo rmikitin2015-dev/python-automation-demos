@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 r"""
-Монітор нових замовлень на freelance.ua.
+Монітор нових замовлень: freelance.ua (типово) і Freelancehunt.
 
 Що робить:
-  - читає публічний список замовлень freelance.ua (без ключів і реєстрації);
+  - читає публічний список замовлень freelance.ua або Freelancehunt
+    (без ключів і реєстрації);
   - фільтрує локально — за ключовими словами, тегами, бюджетом і свіжістю;
   - запам'ятовує вже показані замовлення в SQLite, тому повторно їх не надсилає;
   - віддає результат у консоль, CSV, HTML і (опційно) у Telegram.
@@ -17,6 +18,8 @@ r"""
   python freelance_monitor.py --config freelance_config.example.json --csv out/orders.csv --html out/orders.html
   python freelance_monitor.py --telegram          # бере токен із TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID
   python freelance_monitor.py --loop 600 --telegram   # перевіряти кожні 10 хвилин
+  python freelance_monitor.py --config freelance_config.freelancehunt.json --loop 900 --telegram
+                                                     # Freelancehunt, лише <10 ставок
 
 Для розкладу (кожні 10 хв) на Windows:
   schtasks /create /tn "Freelance Monitor" /tr "python C:\path\freelance_monitor.py --telegram" /sc minute /mo 10
@@ -28,7 +31,9 @@ import html
 import json
 import os
 import re
+import shutil
 import sqlite3
+import subprocess
 import sys
 import time
 import urllib.error
@@ -37,6 +42,13 @@ import urllib.request
 from datetime import datetime, timezone
 
 BASE_URL = "https://freelance.ua/orders/"
+FH_BASE = "https://freelancehunt.com/ua/projects"
+
+# Місяці в датах Freelancehunt: «21 листопада, 20:17».
+FH_MONTHS = {
+    "січня": 1, "лютого": 2, "березня": 3, "квітня": 4, "травня": 5, "червня": 6,
+    "липня": 7, "серпня": 8, "вересня": 9, "жовтня": 10, "листопада": 11, "грудня": 12,
+}
 
 # Фільтри за замовчуванням — під мою спеціалізацію (Python: парсинг, автоматизація, боти).
 DEFAULT_CONFIG = {
@@ -62,6 +74,10 @@ DEFAULT_CONFIG = {
     "pages": 1,
     "request_delay": 1.0,
     "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) freelance-monitor/1.0",
+    "source": "freelance",       # "freelance" (freelance.ua) або "freelancehunt"
+    "max_bids": None,             # 9 = лише замовлення з менш ніж 10 ставками
+    "word_match": "substring",    # "prefix" — слово з початку, щоб «бот» не ловив «робота»
+    "resolve_publish_time": False,  # Freelancehunt: брати точний час зі сторінки замовлення
 }
 
 # Одна розмітка: картка — це <li class="j-order ..."> всередині ul.l-projectList.
@@ -75,6 +91,18 @@ PROPOSALS_RE = re.compile(r"(\d+)\s*пропозиц", re.S)
 HOT_RE = re.compile(r'class="highlited-label"')
 ID_RE = re.compile(r"/orders/(\d+)-")
 TAG_TEXT_RE = re.compile(r"<[^>]+>")
+
+# Розмітка Freelancehunt: картка — <article class="widget project-card ...">.
+FH_CARD_SPLIT = '<article class="widget project-card'
+FH_TITLE_RE = re.compile(r'<h2 class="list-card-title[^"]*"[^>]*>\s*<a href="([^"]+)"[^>]*>(.*?)</a>', re.S)
+FH_STATS_RE = re.compile(r'<div class="project-stats">(.*?)</div>', re.S)
+FH_BUDGET_RE = re.compile(r'class="project-stat budget">(.*?)</span>', re.S)
+FH_BIDS_RE = re.compile(r"(\d+)\s*став[а-яіїєґ]*")  # «1 ставка», «52 ставки», «8 ставок»
+FH_DATE_RE = re.compile(r'<span class="project-date">([^<]+)</span>')
+FH_SKILL_RE = re.compile(r'class="project-skill">(.*?)</a>', re.S)
+FH_DESC_RE = re.compile(r'<p class="project-description[^"]*"[^>]*>(.*?)</p>', re.S)
+FH_PUBLISHED_RE = re.compile(r'Опубліковано:</span>\s*([^<]+)</li>', re.S)
+FH_ID_RE = re.compile(r"/(\d+)\.html")
 
 
 def setup_stdout() -> None:
@@ -189,22 +217,139 @@ def parse_orders(page_html: str) -> list[dict]:
     return orders
 
 
-def build_url(page: int = 1) -> str:
+def build_url(page: int = 1, source: str = "freelance") -> str:
     """URL списку замовлень: сторінка 1 — без параметрів, далі ?page=N."""
-    return BASE_URL if page <= 1 else BASE_URL + "?" + urllib.parse.urlencode({"page": str(page)})
+    base = FH_BASE if source == "freelancehunt" else BASE_URL
+    return base if page <= 1 else base + "?" + urllib.parse.urlencode({"page": str(page)})
+
+
+def parse_fh_moment(label: str, now: datetime | None = None) -> tuple[datetime | None, bool]:
+    """«1:33» або «21 листопада, 20:17» -> (дата-час, чи відомий час доби)."""
+    now = now or datetime.now()
+    text = clean_text(label).lower()
+    if not text:
+        return None, False
+
+    today = re.fullmatch(r"(\d{1,2}):(\d{2})", text)
+    if today:
+        moment = now.replace(
+            hour=int(today.group(1)), minute=int(today.group(2)), second=0, microsecond=0
+        )
+        return moment, True
+
+    dotted = re.search(r"(\d{1,2})\.(\d{2})\.(\d{4})(?:,?\s*(\d{1,2}):(\d{2}))?", text)
+    if dotted:
+        try:
+            moment = datetime(
+                int(dotted.group(3)), int(dotted.group(2)), int(dotted.group(1)),
+                int(dotted.group(4) or 0), int(dotted.group(5) or 0),
+            )
+        except ValueError:
+            return None, False
+        return moment, dotted.group(4) is not None
+
+    words = re.search(
+        r"(\d{1,2})\s+([а-яіїєґ]+)(?:\s+(\d{4}))?(?:,?\s*(\d{1,2}):(\d{2}))?", text
+    )
+    if words and words.group(2) in FH_MONTHS:
+        year = int(words.group(3)) if words.group(3) else now.year
+        try:
+            moment = datetime(
+                year, FH_MONTHS[words.group(2)], int(words.group(1)),
+                int(words.group(4) or 0), int(words.group(5) or 0),
+            )
+        except ValueError:
+            return None, False
+        if not words.group(3) and moment > now:
+            moment = moment.replace(year=year - 1)
+        return moment, words.group(4) is not None
+
+    return None, False
+
+
+def parse_fh_orders(page_html: str, now: datetime | None = None) -> list[dict]:
+    """Розбирає стрічку Freelancehunt (картки .project-card) у список словників."""
+    now = now or datetime.now()
+    orders: list[dict] = []
+    for chunk in (page_html or "").split(FH_CARD_SPLIT)[1:]:
+        title_match = FH_TITLE_RE.search(chunk)
+        if not title_match:
+            continue
+        url = html.unescape(title_match.group(1)).strip()
+        id_match = FH_ID_RE.search(url)
+        if not id_match:
+            continue
+
+        stats_match = FH_STATS_RE.search(chunk)
+        stats_html = stats_match.group(1) if stats_match else ""
+        budget_match = FH_BUDGET_RE.search(stats_html)
+        budget_raw = clean_text(budget_match.group(1)) if budget_match else ""
+        bids_match = FH_BIDS_RE.search(clean_text(stats_html))
+        date_match = FH_DATE_RE.search(chunk)
+        label = clean_text(date_match.group(1)) if date_match else ""
+        published, time_known = parse_fh_moment(label, now)
+        tags = [clean_text(tag) for tag in FH_SKILL_RE.findall(chunk)]
+        desc_match = FH_DESC_RE.search(chunk)
+
+        orders.append(
+            {
+                "id": id_match.group(1),
+                "title": clean_text(title_match.group(2)),
+                "url": url,
+                "site": "Freelancehunt",
+                "budget_raw": budget_raw,
+                "budget": parse_budget(budget_raw),
+                "description": clean_text(desc_match.group(1)) if desc_match else "",
+                "age_label": label,
+                "age_hours": (
+                    round(max(0.0, (now - published).total_seconds() / 3600.0), 2)
+                    if published and time_known
+                    else None
+                ),
+                "published_at": published.strftime("%Y-%m-%d %H:%M") if published else "",
+                "proposals": int(bids_match.group(1)) if bids_match else None,
+                "tags": [tag for tag in tags if tag],
+                "hot": "Терміновий" in chunk,
+            }
+        )
+    return orders
+
+
+BROWSER_HEADERS = {
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "uk-UA,uk;q=0.9,en-US;q=0.8,en;q=0.7",
+    "Cache-Control": "no-cache",
+}
 
 
 def fetch_page(url: str, user_agent: str, timeout: int = 30) -> str:
-    req = urllib.request.Request(
-        url,
-        headers={
-            "User-Agent": user_agent,
-            "Accept": "text/html,application/xhtml+xml",
-            "Accept-Language": "uk,en;q=0.8",
-        },
+    """Читає сторінку; на 403/429 повторює через системний curl."""
+    req = urllib.request.Request(url, headers={"User-Agent": user_agent, **BROWSER_HEADERS})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.read().decode("utf-8", errors="replace")
+    except urllib.error.HTTPError as exc:
+        if exc.code not in (403, 429):
+            raise
+        return fetch_with_curl(url, user_agent, timeout)
+
+
+def fetch_with_curl(url: str, user_agent: str, timeout: int = 30) -> str:
+    """Freelancehunt відхиляє urllib (403), тому другий шанс — curl із браузерним UA."""
+    curl = shutil.which("curl")
+    if not curl:
+        raise OSError("curl не знайдено, а сайт відповів 403")
+    proc = subprocess.run(
+        [
+            curl, "-sSL", "--max-time", str(timeout),
+            "-A", user_agent, "-H", "Accept-Language: uk-UA,uk;q=0.9", url,
+        ],
+        capture_output=True,
     )
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        return resp.read().decode("utf-8", errors="replace")
+    if proc.returncode != 0:
+        detail = proc.stderr.decode("utf-8", "replace").strip()
+        raise OSError(detail or f"curl завершився з кодом {proc.returncode}")
+    return proc.stdout.decode("utf-8", errors="replace")
 
 
 FIXTURES_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures")
@@ -221,45 +366,93 @@ def collect(cfg: dict) -> list[dict]:
     delay = float(cfg.get("request_delay") or 0)
     pages = max(1, int(cfg.get("pages") or 1))
     ua = cfg.get("user_agent") or DEFAULT_CONFIG["user_agent"]
+    source = str(cfg.get("source") or "freelance")
+    parser = parse_fh_orders if source == "freelancehunt" else parse_orders
 
     collected: dict[str, dict] = {}
     for page in range(1, pages + 1):
-        url = build_url(page)
+        url = build_url(page, source)
         try:
             page_html = fetch_page(url, ua)
         except (urllib.error.URLError, TimeoutError, OSError) as exc:
             print(f"[!] Не вдалося прочитати {url}: {exc}", file=sys.stderr)
             continue
 
-        for order in parse_orders(page_html):
+        for order in parser(page_html):
             collected.setdefault(order["id"], order)
 
         if delay:
             time.sleep(delay)
-    return list(collected.values())
+
+    orders = list(collected.values())
+    if source == "freelancehunt" and cfg.get("resolve_publish_time"):
+        orders = resolve_fh_publish_time(orders, cfg, ua)
+    return orders
 
 
-def matches(order: dict, cfg: dict) -> bool:
-    """Локальний фільтр: бюджет, свіжість, слова.
+def resolve_fh_publish_time(orders: list[dict], cfg: dict, ua: str) -> list[dict]:
+    """У стрічці час є лише для сьогоднішніх — для кандидатів добираємо зі сторінки."""
+    delay = float(cfg.get("request_delay") or 0)
+    for order in orders:
+        if order.get("age_hours") is not None:
+            continue
+        if not (_budget_ok(order, cfg) and _bids_ok(order, cfg) and _text_ok(order, cfg)):
+            continue
+        try:
+            page_html = fetch_page(order["url"], ua)
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            print(f"[!] Не вдалося прочитати {order['url']}: {exc}", file=sys.stderr)
+            continue
+        match = FH_PUBLISHED_RE.search(page_html)
+        if match:
+            published, known = parse_fh_moment(match.group(1))
+            if published and known:
+                order["published_at"] = published.strftime("%Y-%m-%d %H:%M")
+                age = (datetime.now() - published).total_seconds() / 3600.0
+                order["age_hours"] = round(max(0.0, age), 2)
+        if delay:
+            time.sleep(delay)
+    return orders
 
-    cfg має бути з load_config() або normalize_filters(): там списки слів уже
-    приведені до нижнього регістру й обрізані, тому тут їх не перераховуємо.
-    """
+
+def _budget_ok(order: dict, cfg: dict) -> bool:
+    """Бюджет: «Договірна» (None) не відсікається — ціна невідома, а не низька."""
     budget = order.get("budget")
     min_budget = cfg.get("min_budget")
     max_budget = cfg.get("max_budget")
-    # «Договірна» — це невідома ціна, а не низька, тому такі замовлення пропускаємо.
     if budget is not None:
         if min_budget and budget < float(min_budget):
             return False
         if max_budget and budget > float(max_budget):
             return False
+    return True
 
-    max_age = cfg.get("max_age_hours")
-    age = order.get("age_hours")
-    if max_age and age is not None and age > float(max_age):
-        return False
 
+def _bids_ok(order: dict, cfg: dict) -> bool:
+    """Кількість ставок: max_bids=9 пропускає все, де ставок менше 10.
+
+    Якщо кількість невідома (None), замовлення відкидається: умову
+    «менше 10 ставок» тоді підтвердити неможливо.
+    """
+    limit = cfg.get("max_bids")
+    if limit is None:
+        return True
+    bids = order.get("proposals")
+    return bids is not None and int(bids) <= int(limit)
+
+
+def _hit(haystack: str, words: list[str], mode: str) -> bool:
+    """Пошук слів: substring (типово) або prefix — слово з початку слова."""
+    for word in words:
+        if mode == "prefix":
+            if re.search(r"(?<![0-9a-zа-яіїєґ])" + re.escape(word), haystack):
+                return True
+        elif word in haystack:
+            return True
+    return False
+
+
+def _text_ok(order: dict, cfg: dict) -> bool:
     haystack = " ".join(
         [
             order.get("title") or "",
@@ -267,12 +460,35 @@ def matches(order: dict, cfg: dict) -> bool:
             " ".join(order.get("tags") or []),
         ]
     ).lower()
+    mode = str(cfg.get("word_match") or "substring")
 
-    if any(word in haystack for word in cfg.get("excludes") or []):
+    if _hit(haystack, cfg.get("excludes") or [], mode):
         return False
 
     keywords = cfg.get("keywords") or []
-    return not keywords or any(word in haystack for word in keywords)
+    return not keywords or _hit(haystack, keywords, mode)
+
+
+def _age_ok(order: dict, cfg: dict) -> bool:
+    max_age = cfg.get("max_age_hours")
+    age = order.get("age_hours")
+    if max_age and age is not None and age > float(max_age):
+        return False
+    return True
+
+
+def matches(order: dict, cfg: dict) -> bool:
+    """Локальний фільтр: бюджет, ставки, свіжість, слова.
+
+    cfg має бути з load_config() або normalize_filters(): там списки слів уже
+    приведені до нижнього регістру й обрізані, тому тут їх не перераховуємо.
+    """
+    return (
+        _budget_ok(order, cfg)
+        and _bids_ok(order, cfg)
+        and _age_ok(order, cfg)
+        and _text_ok(order, cfg)
+    )
 
 
 class SeenStore:
@@ -318,11 +534,12 @@ def format_row(order: dict) -> dict:
     budget = order.get("budget")
     return {
         "id": order.get("id") or "",
+        "site": order.get("site") or "freelance.ua",
         "title": (order.get("title") or "").strip(),
         "budget": f"{budget:,.0f}".replace(",", " ") if budget is not None else (order.get("budget_raw") or ""),
         "tags": ", ".join(order.get("tags") or []),
-        "published": order.get("age_label") or "",
-        "proposals": str(order.get("proposals") or 0),
+        "published": order.get("age_label") or order.get("published_at") or "",
+        "proposals": "" if order.get("proposals") is None else str(order.get("proposals")),
         "hot": "гаряче" if order.get("hot") else "",
         "description": (order.get("description") or "")[:200],
         "url": order.get("url") or "",
@@ -333,7 +550,7 @@ def print_rows(rows: list[dict]) -> None:
     for row in rows:
         print(f"\n[{row['id']}] {row['title']}")
         hot = " | 🔥 гаряче" if row.get("hot") else ""
-        print(f"  Бюджет: {row['budget'] or '—'} | Опубліковано: {row['published'] or '—'} | Пропозицій: {row['proposals']}{hot}")
+        print(f"  Бюджет: {row['budget'] or '—'} | Опубліковано: {row['published'] or '—'} | Ставок: {row['proposals'] or '—'}{hot}")
         if row["tags"]:
             print(f"  Теги: {row['tags']}")
         if row["description"]:
@@ -351,9 +568,12 @@ def write_csv(rows: list[dict], path: str) -> None:
 
 def write_html(rows: list[dict], path: str, cfg: dict) -> None:
     ensure_parent(path)
+    site = "Freelancehunt" if str(cfg.get("source") or "") == "freelancehunt" else "freelance.ua"
     filters = []
     if cfg.get("keywords"):
         filters.append("ключові слова: " + ", ".join(str(k) for k in cfg["keywords"]))
+    if cfg.get("max_bids") is not None:
+        filters.append(f"ставок не більше {cfg['max_bids']}")
     if cfg.get("min_budget"):
         filters.append(f"бюджет від {cfg['min_budget']} грн")
 
@@ -373,7 +593,7 @@ def write_html(rows: list[dict], path: str, cfg: dict) -> None:
 
     doc = f"""<!doctype html>
 <html lang="uk"><head><meta charset="utf-8">
-<title>Нові замовлення freelance.ua</title>
+<title>Нові замовлення {html.escape(site)}</title>
 <style>
  body{{font-family:system-ui,Segoe UI,Arial,sans-serif;margin:32px;color:#1b1b1b}}
  h1{{font-size:20px;margin:0 0 4px}}
@@ -399,10 +619,11 @@ def write_html(rows: list[dict], path: str, cfg: dict) -> None:
 
 
 def telegram_text(row: dict) -> str:
-    parts = ["Нове замовлення на freelance.ua", f"{row['title']}"]
+    site = row.get("site") or "freelance.ua"
+    parts = [f"Нове замовлення на {site}", f"{row['title']}"]
     if row.get("hot"):
         parts.append("🔥 гаряче")
-    parts.append(f"Бюджет: {row['budget'] or '—'} грн · пропозицій: {row['proposals']}")
+    parts.append(f"Бюджет: {row['budget'] or '—'} · ставок: {row['proposals'] or '—'}")
     if row["tags"]:
         parts.append(row["tags"])
     parts.append(row["url"])
@@ -477,6 +698,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--max-budget", type=float, default=None, help="максимальний бюджет, грн")
     parser.add_argument("--max-age", type=float, default=None, help="максимальний вік замовлення, годин")
     parser.add_argument("--pages", type=int, default=None, help="скільки сторінок списку читати")
+    parser.add_argument("--source", choices=["freelance", "freelancehunt"], default=None,
+                        help="джерело: freelance.ua (типово) або Freelancehunt")
+    parser.add_argument("--max-bids", type=int, default=None,
+                        help="максимум ставок у замовленні (9 = менше 10)")
     parser.add_argument("--db", default="state/freelance_seen.db", help="SQLite для дедуплікації")
     parser.add_argument("--csv", help="записати результат у CSV")
     parser.add_argument("--html", help="записати HTML-звіт")
@@ -504,6 +729,12 @@ def main(argv: list[str] | None = None) -> int:
         cfg["max_age_hours"] = args.max_age
     if args.pages is not None:
         cfg["pages"] = args.pages
+    if args.source:
+        cfg["source"] = args.source
+    if args.max_bids is not None:
+        cfg["max_bids"] = args.max_bids
+    if args.source == "freelancehunt":
+        cfg["resolve_publish_time"] = True
 
     # CLI-прапорці перекривають конфіг, тому після них слова треба нормалізувати ще раз.
     cfg = normalize_filters(cfg)
