@@ -13,7 +13,7 @@ import os
 import sys
 import tempfile
 import unittest
-from datetime import date
+from datetime import date, datetime
 from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -26,6 +26,7 @@ import prospect_finder  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SAMPLE_CSV = os.path.join(os.path.dirname(HERE), "sample_statement.csv")
+FH_FIXTURE = os.path.join(os.path.dirname(HERE), "fixtures", "freelancehunt_orders.html")
 
 
 class TestBankReport(unittest.TestCase):
@@ -213,6 +214,65 @@ class TestFreelanceMonitor(unittest.TestCase):
         for raw, expected in cases.items():
             with self.subTest(raw=raw):
                 self.assertEqual(freelance_monitor.parse_budget(raw), expected)
+
+    def test_parse_freelancehunt_fixture(self):
+        """Реальна розмітка стрічки: якщо зміняться класи, тест упаде, а не мовчки дасть 0 замовлень."""
+        with open(FH_FIXTURE, "r", encoding="utf-8") as fh:
+            orders = freelance_monitor.parse_fh_orders(fh.read(), now=datetime(2026, 11, 22, 12, 0))
+
+        self.assertEqual(len(orders), 3)
+        self.assertEqual([o["id"] for o in orders], ["1665986", "1665959", "1666006"])
+
+        first, second, third = orders
+        self.assertEqual(first["site"], "Freelancehunt")
+        self.assertIn("Шукаємо промоутерів", first["title"])
+        self.assertTrue(first["url"].startswith("https://freelancehunt.com/ua/project/"))
+        self.assertEqual(first["budget"], 1000.0)
+        self.assertIn("Контекстна реклама", first["tags"])
+
+        # бюджет «Договірна» — це None, а не 0: фільтр за сумою його не ріже
+        self.assertIsNone(second["budget"])
+
+        # «21 листопада» без часу: дата відома, вік — ні (добирається зі сторінки)
+        self.assertEqual(first["published_at"], "2026-11-21 00:00")
+        self.assertIsNone(first["age_hours"])
+        # «3:02» — сьогоднішній час, вік рахується від now
+        self.assertAlmostEqual(third["age_hours"], 8.97, places=2)
+
+    def test_freelancehunt_bids_wording(self):
+        """Форми слова «ставка»: 1 ставка / 53 ставки / 9 ставок — усі дають число."""
+        cases = {
+            "1 ставка": 1,
+            "53 ставки": 53,
+            "9 ставок": 9,
+            "без ставок": None,
+            "робота на годину": None,  # «бот»/«робот» не мають ловитись як ставки
+        }
+        for text, expected in cases.items():
+            with self.subTest(text=text):
+                match = freelance_monitor.FH_BIDS_RE.search(text)
+                self.assertEqual(int(match.group(1)) if match else None, expected)
+
+    def test_max_bids_filter(self):
+        """max_bids=9 пропускає лише замовлення, де ставок менше 10."""
+        with open(FH_FIXTURE, "r", encoding="utf-8") as fh:
+            by_bids = {o["proposals"]: o for o in freelance_monitor.parse_fh_orders(fh.read())}
+        self.assertEqual(sorted(by_bids), [1, 9, 53])
+
+        cfg = freelance_monitor.normalize_filters(dict(freelance_monitor.DEFAULT_CONFIG, max_bids=9))
+        self.assertTrue(freelance_monitor.matches(by_bids[1], cfg))
+        self.assertTrue(freelance_monitor.matches(by_bids[9], cfg))   # 9 < 10 — ще проходить
+        self.assertFalse(freelance_monitor.matches(by_bids[53], cfg))
+
+        self.assertFalse(freelance_monitor._bids_ok({"proposals": 10}, cfg))
+        # невідома кількість ставок: умову «менше 10» підтвердити не можна — відсікаємо
+        self.assertFalse(freelance_monitor._bids_ok({"proposals": None}, cfg))
+        self.assertFalse(freelance_monitor._bids_ok({}, cfg))
+
+        # без обмеження кількість ставок не впливає
+        no_limit = freelance_monitor.normalize_filters(dict(freelance_monitor.DEFAULT_CONFIG, max_bids=None))
+        self.assertTrue(freelance_monitor._bids_ok({"proposals": 53}, no_limit))
+        self.assertTrue(freelance_monitor._bids_ok({"proposals": None}, no_limit))
 
     def test_parse_age_hours(self):
         cases = {

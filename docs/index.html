@@ -43,6 +43,10 @@
     font-weight: 600; font-variant-numeric: tabular-nums;
   }
   .price span { display: block; font-weight: 400; font-size: 13px; color: var(--muted); }
+  .sites { list-style: none; margin: 18px 0 0; padding: 0; display: grid; gap: 14px; }
+  .sites li { border-left: 2px solid var(--accent); padding-left: 14px; }
+  .sites a { font-weight: 600; }
+  .sites span { display: block; color: var(--muted); font-size: 14px; }
   .contact { margin-top: 44px; border-top: 1px solid var(--line); padding-top: 24px; }
   .contact p { margin: 0 0 10px; color: var(--muted); }
   a { color: var(--accent); }
@@ -78,8 +82,8 @@
     <article class="task">
       <h3>Звіт із банківської виписки</h3>
       <ul>
-        <li>тестова виписка: <b>31 транзакція</b>, витрати <b>37 418,64 ₴</b></li>
-        <li>надходження 52 199,00 ₴, середній чек <b>1 336,38 ₴</b></li>
+        <li>виписка на <b>7 500 транзакцій</b> — повний звіт за <b>0,4–0,8 с</b></li>
+        <li>10 категорій, середній чек <b>915,15 ₴</b>, витрати 6 657 748,20 ₴</li>
         <li>три файли на виході: сводка, CSV, HTML; категорії — в JSON</li>
       </ul>
       <div class="price">1 500–2 000 ₴<span>звіт за вашими категоріями, 1–2 дні</span></div>
@@ -90,12 +94,33 @@
       <ul>
         <li>вільні слоти, підтвердження, скасування клієнтом</li>
         <li>подвійний запис на слот відхиляється, чужу заявку скасувати не можна</li>
-        <li><b>28 тестів</b> без мережі, повний діалог відтворюється без токена</li>
+        <li><b>31 тест</b> без мережі, повний діалог відтворюється без токена</li>
       </ul>
       <div class="price">від 8 000 ₴<span>бот під ваші послуги й графік, 2–4 дні</span></div>
     </article>
 
   </div>
+
+  <h2>Досвід: 4 діючі сайти</h2>
+  <p class="lead">Власні проєкти, не роботи на замовлення: від коду до деплою й підтримки.</p>
+  <ul class="sites">
+    <li>
+      <a href="https://www.1099deductions.com/">1099deductions.com</a>
+      <span>Довідник з форм 1099 для фрілансерів і підрядників у США.</span>
+    </li>
+    <li>
+      <a href="https://www.gigwisetax.com/">gigwisetax.com</a>
+      <span>Податковий довідник для гіг-працівників: що декларувати і коли.</span>
+    </li>
+    <li>
+      <a href="https://www.ukgigtax.com/">ukgigtax.com</a>
+      <span>Те саме для Великої Британії: податки для самозайнятих.</span>
+    </li>
+    <li>
+      <a href="https://www.compressto20kb.com/">compressto20kb.com</a>
+      <span>Стиснення зображень до 20 КБ для форм із лімітом розміру файлу.</span>
+    </li>
+  </ul>
 
   <div class="contact">
     <h2 style="margin-top:0">Контакт</h2>
@@ -105,7 +130,7 @@
       <a href="https://github.com/rmikitin2015-dev/python-automation-demos">Код на GitHub</a>
       <a href="https://github.com/rmikitin2015-dev/python-automation-demos/blob/main/docs/cases.md">Кейси з цифрами</a>
     </div>
-    <footer>П’ять інструментів, 28 тестів, нуль сторонніх залежностей, Python 3.10+.</footer>
+    <footer>П’ять інструментів, 31 тест, нуль сторонніх залежностей, Python 3.10+.</footer>
   </div>
 
 </div>
